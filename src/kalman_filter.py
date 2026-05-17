@@ -102,6 +102,118 @@ class KalmanFilter:
             'error_cov': np.array(self.history_error_cov)
         }
 
+class ErrorPatternKalmanFilter(KalmanFilter):
+    """
+    改善版カルマンフィルタ：誤差パターン学習
+    
+    予測ステップでLSTMの系統的なバイアスを学習して補正
+    実務的に使える翌日予測の精度を上げる
+    """
+    
+    def __init__(self, process_variance, measurement_variance, initial_value, initial_estimate_error, error_history_window=10):
+        """
+        Args:
+            process_variance: プロセスノイズの分散 Q
+            measurement_variance: 観測ノイズの分散 R
+            initial_value: 初期値
+            initial_estimate_error: 初期推定誤差分散
+            error_history_window: 誤差パターン学習に使う直近日数（デフォルト10日）
+        """
+        super().__init__(process_variance, measurement_variance, initial_value, initial_estimate_error)
+        
+        self.error_history = []  # LSTM予測誤差の履歴
+        self.error_history_window = error_history_window  # 学習ウィンドウサイズ
+        self.history_bias_correction = []  # バイアス補正値の履歴
+    
+    def predict(self, predicted_value):
+        """
+        改善版予測ステップ：過去の誤差パターンから補正
+        
+        Args:
+            predicted_value: LSTMの予測値
+        Returns:
+            補正済み予測値, 予測誤差共分散
+        """
+        # 予測誤差共分散の更新: P_k|k-1 = P_k-1 + Q
+        P_k_pred = self.P_k + self.Q
+        
+        # 直近の誤差パターンから、LSTMの系統的なバイアスを推定
+        bias_correction = 0.0
+        if len(self.error_history) >= self.error_history_window:
+            # 直近N日の誤差の平均 = LSTM予測の系統的バイアス
+            recent_errors = np.array(self.error_history[-self.error_history_window:])
+            bias = np.mean(recent_errors)  # 過去の誤差の平均
+            
+            # バイアスを部分的に補正（完全には補正しない：0.3倍）
+            # 理由：サンプル数が少ない時や、マーケット環境が急変した場合への耐性
+            bias_correction = bias * 0.3
+        elif len(self.error_history) > 0:
+            # 初期段階では、利用可能な誤差から学習
+            recent_errors = np.array(self.error_history)
+            bias = np.mean(recent_errors)
+            bias_correction = bias * 0.1  # より保守的な補正
+        
+        # LSTM予測値を誤差パターンで補正
+        x_k_pred = predicted_value - bias_correction
+        
+        # 履歴に保存
+        self.history_predicted.append(x_k_pred)
+        self.history_bias_correction.append(bias_correction)
+        
+        return x_k_pred, P_k_pred
+    
+    def update(self, measured_value, predicted_value):
+        """
+        更新（補正）ステップ：実績値が判明後に誤差パターンを記録
+        
+        Args:
+            measured_value: 実際の観測値（実績値）
+            predicted_value: LSTMの予測値
+        Returns:
+            補正後の推定値
+        """
+        # 予測ステップ
+        x_k_pred, P_k_pred = self.predict(predicted_value)
+        
+        # カルマンゲインの計算: K_k = P_k|k-1 / (P_k|k-1 + R)
+        K_k = P_k_pred / (P_k_pred + self.R)
+        
+        # 観測の誤差: y_k = z_k - x_k|k-1
+        innovation = measured_value - x_k_pred
+        
+        # 状態推定値の更新: x_k|k = x_k|k-1 + K_k * (z_k - x_k|k-1)
+        x_k = x_k_pred + K_k * innovation
+        
+        # 推定誤差分散の更新: P_k|k = (1 - K_k) * P_k|k-1
+        P_k = (1.0 - K_k) * P_k_pred
+        
+        # 状態を更新
+        self.x_k = x_k
+        self.P_k = P_k
+        
+        # 履歴を保存
+        self.history_filtered.append(x_k)
+        self.history_gain.append(K_k)
+        self.history_error_cov.append(P_k)
+        
+        # === 重要：LSTM予測の誤差パターンを記録 ===
+        # predicted_value は元のLSTM予測値
+        # measured_value は実績値
+        # この誤差が次回の予測ステップで利用される
+        lstm_error = measured_value - predicted_value
+        self.error_history.append(lstm_error)
+        
+        return x_k
+    
+    def get_history(self):
+        """
+        フィルタリング履歴を取得
+        """
+        history = super().get_history()
+        history['bias_correction'] = np.array(self.history_bias_correction)
+        history['lstm_error'] = np.array(self.error_history)
+        return history
+
 class AdaptiveKalmanFilter(KalmanFilter):
     """
     適応カルマンフィルタ
