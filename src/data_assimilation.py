@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, 'src')
 
 from train_lstm import LSTMModel, create_sequences
-from kalman_filter import KalmanFilter, AdaptiveKalmanFilter
+from kalman_filter import KalmanFilter, AdaptiveKalmanFilter, ErrorPatternKalmanFilter
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -63,8 +63,8 @@ def data_assimilation_experiment():
     """
     データ同化実験
     1. 学習済みLSTMで次の日の株価を予測
-    2. 実績値が得られたら、カルマンフィルタで補正
-    3. 補正値をスケーラーで逆正規化して実値で評価
+    2. 実績値が得られたら、カルマンフィルタで更新（誤差学習に使用）
+    3. 予測値を主指標、補正値を副指標として実値で評価
     """
     print("\n========== データ同化実験開始 ==========\n")
     
@@ -77,13 +77,18 @@ def data_assimilation_experiment():
     
     print(f"初期シーケンス: {recent_data[-1, 0]:.6f} (正規化済み)")
     
-    # カルマンフィルタを初期化
-    # システムノイズ（予測誤差）と観測ノイズ（実績と予測の誤差）の分散を設定
-    kf = KalmanFilter(
-        process_variance=0.0002,  # Q: システムノイズ分散
-        measurement_variance=0.0001,  # R: 観測ノイズ分散
+    # 誤差パターン学習付きカルマンフィルタを初期化
+    # 予測ステップでLSTM誤差系列を学習し、系統バイアスを補正
+    kf = ErrorPatternKalmanFilter(
+        process_variance=0.00028,  # Q: 追従性を少し強化
+        measurement_variance=0.00006,  # R: 観測信頼を少し強化
         initial_value=recent_data[-1, 0],  # 初期値: 最新の正規化済み株価
-        initial_estimate_error=0.001  # 初期推定誤差分散
+        initial_estimate_error=0.001,  # 初期推定誤差分散
+        error_history_window=10,  # 誤差学習ウィンドウ
+        prediction_blend=0.70,
+        bias_gain_early=0.06,
+        bias_gain_main=0.22,
+        max_bias_correction=0.035
     )
     
     print(f"カルマンフィルタ初期化:")
@@ -97,8 +102,8 @@ def data_assimilation_experiment():
     test_dates = df_test.index
     
     print(f"検証期間: {len(df_test)}日\n")
-    print(f"{'日付':<10} {'実績値':>9} {'LSTM予測値':>9} {'KF予測値':>9} {'KF補正値':>9} {'LSTM予測誤差':>8} {'KF補正誤差':>8}") # 全角は2文字分
-    print("-" * 90)
+    print(f"{'日付':<10} {'実績値':>9} {'LSTM予測値':>9} {'KF予測値':>9} {'KF補正値':>9} {'LSTM誤差':>8} {'KF予測誤差':>10} {'KF補正誤差':>10}")
+    print("-" * 116)
     
     # シーケンシャルに検証
     for day_idx in range(len(test_data)):
@@ -108,11 +113,9 @@ def data_assimilation_experiment():
         # LSTMで予測
         lstm_pred = predict_next(model, recent_data)
 
-        # カルマンフィルタで予測
-        x_k_pred, P_k_pred = kf.predict(lstm_pred)
-        
-        # カルマンフィルタで補正
+        # カルマンフィルタで更新（内部で予測→更新を実行）
         kf_corrected = kf.update(actual_normalized, lstm_pred)
+        x_k_pred = kf.history_predicted[-1] if kf.history_predicted else lstm_pred
         
         # 逆正規化して実値に戻す
         actual_value = scaler.inverse_transform([[actual_normalized]])[0, 0]
@@ -120,9 +123,10 @@ def data_assimilation_experiment():
         kf_pred_value = scaler.inverse_transform([[x_k_pred]])[0, 0]
         kf_corrected_value = scaler.inverse_transform([[kf_corrected]])[0, 0]
         
-        # 誤差を計算
+        # 誤差を計算（予測誤差を主指標とする）
         lstm_error = abs(actual_value - lstm_pred_value)
-        kf_error = abs(actual_value - kf_corrected_value)
+        kf_pred_error = abs(actual_value - kf_pred_value)
+        kf_corrected_error = abs(actual_value - kf_corrected_value)
         
         # 結果を保存
         results.append({
@@ -136,7 +140,10 @@ def data_assimilation_experiment():
             'kf_pred_value': kf_pred_value,
             'kf_corrected_value': kf_corrected_value,
             'lstm_error': lstm_error,
-            'kf_error': kf_error,
+            'kf_pred_error': kf_pred_error,
+            'kf_corrected_error': kf_corrected_error,
+            'kf_error': kf_corrected_error,
+            'bias_correction': kf.history_bias_correction[-1] if hasattr(kf, 'history_bias_correction') and kf.history_bias_correction else 0.0,
             'kf_gain': kf.history_gain[-1] if kf.history_gain else 0,
             'kf_error_cov': kf.history_error_cov[-1] if kf.history_error_cov else 0
         })
@@ -145,7 +152,7 @@ def data_assimilation_experiment():
         recent_data = np.vstack([recent_data[1:], [[actual_normalized]]])
         
         # 結果を表示
-        print(f"{current_date:<12} {actual_value:>12.2f} {lstm_pred_value:>12.2f} {kf_pred_value:>12.2f} {kf_corrected_value:>12.2f} {lstm_error:>12.2f} {kf_error:>12.2f}")
+        print(f"{current_date:<12} {actual_value:>12.2f} {lstm_pred_value:>12.2f} {kf_pred_value:>12.2f} {kf_corrected_value:>12.2f} {lstm_error:>10.2f} {kf_pred_error:>12.2f} {kf_corrected_error:>12.2f}")
     
     # 結果をDataFrameに変換して保存
     results_df = pd.DataFrame(results)
@@ -157,21 +164,27 @@ def data_assimilation_experiment():
     
     # MAE (Mean Absolute Error)
     lstm_mae = results_df['lstm_error'].mean()
-    kf_mae = results_df['kf_error'].mean()
+    kf_pred_mae = results_df['kf_pred_error'].mean()
+    kf_corrected_mae = results_df['kf_corrected_error'].mean()
     
     print(f"MAE（平均絶対誤差）:")
     print(f"  LSTM: {lstm_mae:.2f} 円")
-    print(f"  カルマンフィルタ補正: {kf_mae:.2f} 円")
-    print(f"  改善率: {(1 - kf_mae/lstm_mae)*100:.2f}%")
+    print(f"  カルマンフィルタ予測（主指標）: {kf_pred_mae:.2f} 円")
+    print(f"  改善率（主指標）: {(1 - kf_pred_mae/lstm_mae)*100:.2f}%")
+    print(f"  カルマンフィルタ補正（副指標）: {kf_corrected_mae:.2f} 円")
+    print(f"  改善率（副指標）: {(1 - kf_corrected_mae/lstm_mae)*100:.2f}%")
     
     # RMSE (Root Mean Square Error)
     lstm_rmse = np.sqrt((results_df['lstm_error']**2).mean())
-    kf_rmse = np.sqrt((results_df['kf_error']**2).mean())
+    kf_pred_rmse = np.sqrt((results_df['kf_pred_error']**2).mean())
+    kf_corrected_rmse = np.sqrt((results_df['kf_corrected_error']**2).mean())
     
     print(f"\nRMSE（二乗平均平方根誤差）:")
     print(f"  LSTM: {lstm_rmse:.2f} 円")
-    print(f"  カルマンフィルタ補正: {kf_rmse:.2f} 円")
-    print(f"  改善率: {(1 - kf_rmse/lstm_rmse)*100:.2f}%")
+    print(f"  カルマンフィルタ予測（主指標）: {kf_pred_rmse:.2f} 円")
+    print(f"  改善率（主指標）: {(1 - kf_pred_rmse/lstm_rmse)*100:.2f}%")
+    print(f"  カルマンフィルタ補正（副指標）: {kf_corrected_rmse:.2f} 円")
+    print(f"  改善率（副指標）: {(1 - kf_corrected_rmse/lstm_rmse)*100:.2f}%")
     
     # カルマンゲインの統計
     avg_gain = np.mean(results_df['kf_gain'])

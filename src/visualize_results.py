@@ -1,6 +1,6 @@
 """
 結果可視化スクリプト
-LSTM予測 vs カルマンフィルタ補正 vs 実績値をグラフで表示
+LSTM予測とカルマンフィルタ予測/補正をグラフで表示
 """
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -71,6 +71,70 @@ def visualize_results():
     print(f"✓ グラフを保存: {output_file2}")
     plt.close()
     
+    # ========== グラフ3: 予測誤差比較（主指標） ==========
+    fig3, ax3 = plt.subplots(figsize=(14, 5))
+
+    bar_width = 0.4
+    ax3.bar(x - bar_width/2, results_df['lstm_error'], width=bar_width,
+            color='red', alpha=0.6, label='LSTM予測誤差')
+    ax3.bar(x + bar_width/2, results_df['kf_pred_error'], width=bar_width,
+            color='orange', alpha=0.6, label='KF予測誤差（主指標）')
+
+    if 'kf_corrected_error' in results_df.columns:
+        ax3.plot(x, results_df['kf_corrected_error'], color='green', linewidth=1.8,
+                 label='KF補正誤差（副指標）', alpha=0.9)
+
+    ax3.set_xlabel('日数', fontsize=12)
+    ax3.set_ylabel('絶対誤差（円）', fontsize=12)
+    ax3.set_title('予測誤差の比較（LSTM vs KF予測）', fontsize=14, fontweight='bold')
+    ax3.grid(True, alpha=0.3)
+    ax3.legend(fontsize=10, loc='best')
+
+    ax3.set_xticks(tick_indices)
+    ax3.set_xticklabels([results_df['date'].iloc[i].strftime('%m-%d') for i in tick_indices],
+                        rotation=45)
+    plt.tight_layout()
+
+    output_file3 = 'results/prediction_error_comparison.png'
+    plt.savefig(output_file3, dpi=150, bbox_inches='tight')
+    print(f"✓ グラフを保存: {output_file3}")
+    plt.close()
+
+    # ========== グラフ3b: 予測差分比較（符号付き） ==========
+    # 実績 - 予測（正: 過小予測 / 負: 過大予測）
+    fig3b, ax3b = plt.subplots(figsize=(14, 5))
+
+    lstm_signed_diff = results_df['actual_value'] - results_df['lstm_pred_value']
+    kf_pred_signed_diff = results_df['actual_value'] - results_df['kf_pred_value']
+
+    bar_width_signed = 0.4
+    ax3b.bar(x - bar_width_signed/2, lstm_signed_diff, width=bar_width_signed,
+             color='red', alpha=0.6, label='LSTM差分（実績-予測）')
+    ax3b.bar(x + bar_width_signed/2, kf_pred_signed_diff, width=bar_width_signed,
+             color='orange', alpha=0.6, label='KF予測差分（実績-予測）')
+
+    if 'kf_corrected_value' in results_df.columns:
+        kf_corrected_signed_diff = results_df['actual_value'] - results_df['kf_corrected_value']
+        ax3b.plot(x, kf_corrected_signed_diff, color='green', linewidth=1.8,
+                  label='KF補正差分（副指標）', alpha=0.9)
+
+    ax3b.axhline(y=0, color='black', linestyle='--', linewidth=1)
+    ax3b.set_xlabel('日数', fontsize=12)
+    ax3b.set_ylabel('差分（円）', fontsize=12)
+    ax3b.set_title('予測差分の比較（符号付き: 実績-予測）', fontsize=14, fontweight='bold')
+    ax3b.grid(True, alpha=0.3)
+    ax3b.legend(fontsize=10, loc='best')
+
+    ax3b.set_xticks(tick_indices)
+    ax3b.set_xticklabels([results_df['date'].iloc[i].strftime('%m-%d') for i in tick_indices],
+                         rotation=45)
+    plt.tight_layout()
+
+    output_file3b = 'results/prediction_error_signed_comparison.png'
+    plt.savefig(output_file3b, dpi=150, bbox_inches='tight')
+    print(f"✓ グラフを保存: {output_file3b}")
+    plt.close()
+
     # ========== グラフ4: カルマンゲイン ==========
     # カルマンゲイン（K_k）は、予測値と実績値のどちらをどの程度信頼するかを決める重み係数
     # K_k = P_k_pred / (P_k_pred + measurement_variance)

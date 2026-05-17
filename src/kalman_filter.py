@@ -110,7 +110,18 @@ class ErrorPatternKalmanFilter(KalmanFilter):
     実務的に使える翌日予測の精度を上げる
     """
     
-    def __init__(self, process_variance, measurement_variance, initial_value, initial_estimate_error, error_history_window=10):
+    def __init__(
+        self,
+        process_variance,
+        measurement_variance,
+        initial_value,
+        initial_estimate_error,
+        error_history_window=10,
+        prediction_blend=0.85,
+        bias_gain_early=0.03,
+        bias_gain_main=0.12,
+        max_bias_correction=0.02
+    ):
         """
         Args:
             process_variance: プロセスノイズの分散 Q
@@ -118,12 +129,20 @@ class ErrorPatternKalmanFilter(KalmanFilter):
             initial_value: 初期値
             initial_estimate_error: 初期推定誤差分散
             error_history_window: 誤差パターン学習に使う直近日数（デフォルト10日）
+            prediction_blend: 予測時にLSTM予測を重視する比率（0〜1）
+            bias_gain_early: 初期学習段階のバイアス補正係数
+            bias_gain_main: 通常学習段階のバイアス補正係数
+            max_bias_correction: 1ステップの最大バイアス補正量（正規化空間）
         """
         super().__init__(process_variance, measurement_variance, initial_value, initial_estimate_error)
         
         self.error_history = []  # LSTM予測誤差の履歴
         self.error_history_window = error_history_window  # 学習ウィンドウサイズ
         self.history_bias_correction = []  # バイアス補正値の履歴
+        self.prediction_blend = prediction_blend
+        self.bias_gain_early = bias_gain_early
+        self.bias_gain_main = bias_gain_main
+        self.max_bias_correction = max_bias_correction
     
     def predict(self, predicted_value):
         """
@@ -139,22 +158,31 @@ class ErrorPatternKalmanFilter(KalmanFilter):
         
         # 直近の誤差パターンから、LSTMの系統的なバイアスを推定
         bias_correction = 0.0
-        if len(self.error_history) >= self.error_history_window:
-            # 直近N日の誤差の平均 = LSTM予測の系統的バイアス
-            recent_errors = np.array(self.error_history[-self.error_history_window:])
-            bias = np.mean(recent_errors)  # 過去の誤差の平均
-            
-            # バイアスを部分的に補正（完全には補正しない：0.3倍）
-            # 理由：サンプル数が少ない時や、マーケット環境が急変した場合への耐性
-            bias_correction = bias * 0.3
-        elif len(self.error_history) > 0:
-            # 初期段階では、利用可能な誤差から学習
-            recent_errors = np.array(self.error_history)
-            bias = np.mean(recent_errors)
-            bias_correction = bias * 0.1  # より保守的な補正
+        history_len = len(self.error_history)
+        if history_len > 0:
+            if history_len >= self.error_history_window:
+                recent_errors = np.array(self.error_history[-self.error_history_window:])
+                bias_gain = self.bias_gain_main
+            else:
+                recent_errors = np.array(self.error_history)
+                bias_gain = self.bias_gain_early
+
+            # 直近ほど重みを高くする指数重み平均で、古い誤差の影響を抑える
+            weights = np.linspace(1.0, 2.0, len(recent_errors))
+            bias = np.average(recent_errors, weights=weights)
+            raw_correction = bias * bias_gain
+
+            # 過剰補正を防ぐため、補正量に上限を設定
+            bias_correction = float(np.clip(raw_correction, -self.max_bias_correction, self.max_bias_correction))
         
+        # LSTM予測値を主に使いつつ、前回フィルタ状態を少し混ぜて外れ値を緩和
+        blended_prediction = (
+            self.prediction_blend * predicted_value
+            + (1.0 - self.prediction_blend) * self.x_k
+        )
+
         # LSTM予測値を誤差パターンで補正
-        x_k_pred = predicted_value - bias_correction
+        x_k_pred = blended_prediction - bias_correction
         
         # 履歴に保存
         self.history_predicted.append(x_k_pred)
