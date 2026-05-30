@@ -117,7 +117,6 @@ class ErrorPatternKalmanFilter(KalmanFilter):
         initial_value,
         initial_estimate_error,
         error_history_window=10,
-        prediction_blend=0.85,
         bias_gain_early=0.03,
         bias_gain_main=0.12,
         max_bias_correction=0.02
@@ -129,7 +128,6 @@ class ErrorPatternKalmanFilter(KalmanFilter):
             initial_value: 初期値
             initial_estimate_error: 初期推定誤差分散
             error_history_window: 誤差パターン学習に使う直近日数（デフォルト10日）
-            prediction_blend: 予測時にLSTM予測を重視する比率（0〜1）
             bias_gain_early: 初期学習段階のバイアス補正係数
             bias_gain_main: 通常学習段階のバイアス補正係数
             max_bias_correction: 1ステップの最大バイアス補正量（正規化空間）
@@ -139,7 +137,6 @@ class ErrorPatternKalmanFilter(KalmanFilter):
         self.error_history = []  # LSTM予測誤差の履歴
         self.error_history_window = error_history_window  # 学習ウィンドウサイズ
         self.history_bias_correction = []  # バイアス補正値の履歴
-        self.prediction_blend = prediction_blend
         self.bias_gain_early = bias_gain_early
         self.bias_gain_main = bias_gain_main
         self.max_bias_correction = max_bias_correction
@@ -175,14 +172,8 @@ class ErrorPatternKalmanFilter(KalmanFilter):
             # 過剰補正を防ぐため、補正量に上限を設定
             bias_correction = float(np.clip(raw_correction, -self.max_bias_correction, self.max_bias_correction))
         
-        # LSTM予測値を主に使いつつ、前回フィルタ状態を少し混ぜて外れ値を緩和
-        blended_prediction = (
-            self.prediction_blend * predicted_value
-            + (1.0 - self.prediction_blend) * self.x_k
-        )
-
-        # LSTM予測値を誤差パターンで補正
-        x_k_pred = blended_prediction - bias_correction
+        # LSTM予測値のみを使用し、誤差パターンで補正
+        x_k_pred = predicted_value - bias_correction
         
         # 履歴に保存
         self.history_predicted.append(x_k_pred)

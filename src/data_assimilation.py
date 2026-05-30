@@ -85,7 +85,6 @@ def data_assimilation_experiment():
         initial_value=recent_data[-1, 0],  # 初期値: 最新の正規化済み株価
         initial_estimate_error=0.001,  # 初期推定誤差分散
         error_history_window=10,  # 誤差学習ウィンドウ
-        prediction_blend=0.70,
         bias_gain_early=0.06,
         bias_gain_main=0.22,
         max_bias_correction=0.035
