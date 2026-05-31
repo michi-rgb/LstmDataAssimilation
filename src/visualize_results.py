@@ -40,7 +40,11 @@ def visualize_results():
     
     ax2.set_xlabel('日数', fontsize=12)
     ax2.set_ylabel('株価（円）', fontsize=12)
+<<<<<<< HEAD
     ax2.set_title('LSTM予測値 vs 拡張状態EnKF vs 実績値', fontsize=14, fontweight='bold')
+=======
+    ax2.set_title('LSTM予測値 vs 拡張状態EnKF一化 vs 実績値', fontsize=14, fontweight='bold')
+>>>>>>> e94a03af07677127fb0cdc3859d0a22ea5e24ffb
     ax2.grid(True, alpha=0.3)
     ax2.legend(fontsize=10, loc='best')
     
