@@ -49,14 +49,14 @@ def visualize_results():
              linewidth=2, markersize=5, color='black', zorder=3)
     ax2.plot(x, results_df['lstm_pred_value'], 'o-', label='LSTM予測値', 
              linewidth=1.5, markersize=4, color='red', alpha=0.7, zorder=2)
-    ax2.plot(x, results_df['kf_pred_value'], 'o-', label='カルマンフィルタ予測値', 
+    ax2.plot(x, results_df['kf_pred_value'], 'o-', label='拡張状態EnKF補正予測', 
              linewidth=1.5, markersize=4, color='orange', alpha=0.7, zorder=2)
-    ax2.plot(x, results_df['kf_corrected_value'], 'o-', label='カルマンフィルタ補正値', 
+    ax2.plot(x, results_df['kf_corrected_value'], 'o-', label='拡張状態EnKF更新値', 
              linewidth=1.5, markersize=4, color='green', alpha=0.7, zorder=2)
     
     ax2.set_xlabel('日数', fontsize=12)
     ax2.set_ylabel('株価（円）', fontsize=12)
-    ax2.set_title('LSTM予測値 vs カルマンフィルタ補正値 vs 実績値', fontsize=14, fontweight='bold')
+    ax2.set_title('LSTM予測値 vs 拡張状態EnKF一化 vs 実績値', fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.legend(fontsize=10, loc='best')
     
@@ -78,15 +78,15 @@ def visualize_results():
     ax3.bar(x - bar_width/2, results_df['lstm_error'], width=bar_width,
             color='red', alpha=0.6, label='LSTM予測誤差')
     ax3.bar(x + bar_width/2, results_df['kf_pred_error'], width=bar_width,
-            color='orange', alpha=0.6, label='KF予測誤差（主指標）')
+            color='orange', alpha=0.6, label='EnKF補正予測誤差（主指標）')
 
     if 'kf_corrected_error' in results_df.columns:
         ax3.plot(x, results_df['kf_corrected_error'], color='green', linewidth=1.8,
-                 label='KF補正誤差（副指標）', alpha=0.9)
+                 label='EnKF更新誤差（副指標）', alpha=0.9)
 
     ax3.set_xlabel('日数', fontsize=12)
     ax3.set_ylabel('絶対誤差（円）', fontsize=12)
-    ax3.set_title('予測誤差の比較（LSTM vs KF予測）', fontsize=14, fontweight='bold')
+    ax3.set_title('予測誤差の比較（LSTM vs EnKF補正予測）', fontsize=14, fontweight='bold')
     ax3.grid(True, alpha=0.3)
     ax3.legend(fontsize=10, loc='best')
 
@@ -111,12 +111,12 @@ def visualize_results():
     ax3b.bar(x - bar_width_signed/2, lstm_signed_diff, width=bar_width_signed,
              color='red', alpha=0.6, label='LSTM差分（実績-予測）')
     ax3b.bar(x + bar_width_signed/2, kf_pred_signed_diff, width=bar_width_signed,
-             color='orange', alpha=0.6, label='KF予測差分（実績-予測）')
+             color='orange', alpha=0.6, label='EnKF補正予測差分（実績-予測）')
 
     if 'kf_corrected_value' in results_df.columns:
         kf_corrected_signed_diff = results_df['actual_value'] - results_df['kf_corrected_value']
         ax3b.plot(x, kf_corrected_signed_diff, color='green', linewidth=1.8,
-                  label='KF補正差分（副指標）', alpha=0.9)
+                  label='EnKF更新差分（副指標）', alpha=0.9)
 
     ax3b.axhline(y=0, color='black', linestyle='--', linewidth=1)
     ax3b.set_xlabel('日数', fontsize=12)
@@ -163,14 +163,14 @@ def visualize_results():
     plt.close()
     
     # ========== グラフ5: 推定誤差共分散 ==========
-    # カルマンフィルタが現在の推定値がどの程度正確かを表す
+    # EnKFが現在の推定値がどの程度正確かを表す
     # 観測を繰り返すごとに更新される動的な値
     # 観測を重ねると通常は減少する（信頼度が上がる）
     fig5, ax5 = plt.subplots(figsize=(14, 5))
     ax5.plot(x, results_df['kf_error_cov'], 'o-', color='purple', linewidth=2, markersize=5)
     ax5.set_xlabel('日数', fontsize=12)
     ax5.set_ylabel('推定誤差共分散', fontsize=12)
-    ax5.set_title('カルマンフィルタの推定誤差共分散の推移', fontsize=14, fontweight='bold')
+    ax5.set_title('EnKFの推定誤差共分散の推移', fontsize=14, fontweight='bold')
     ax5.grid(True, alpha=0.3)
     
     # x軸ラベル

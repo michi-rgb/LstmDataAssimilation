@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, 'src')
 
 from train_lstm import LSTMModel, create_sequences
-from kalman_filter import KalmanFilter, AdaptiveKalmanFilter, ErrorPatternKalmanFilter
+from kalman_filter import KalmanFilter, AdaptiveKalmanFilter, ErrorPatternKalmanFilter, AugmentedStateEnKF
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -197,8 +197,118 @@ def data_assimilation_experiment():
     
     return results_df
 
+
+def data_assimilation_augmented_enkf_experiment():
+    """
+    拡張状態EnKFによるデータ同化実験
+    LSTM予測値に学習中のバイアスを加え、観測前に補正した上で観測を同化する。
+    """
+    print("\n========== 拡張状態EnKFデータ同化実験開始 ==========")
+
+    model, scaler, df_train, df_test = load_model_and_data()
+
+    seq_length = 30
+    train_data = df_train['Close'].values.reshape(-1, 1)
+    recent_data = train_data[-seq_length:].copy()
+
+    enkf = AugmentedStateEnKF(
+        ensemble_size=40,
+        process_variance_x=0.00025,
+        process_variance_bias=0.000012,
+        measurement_variance=0.00008,
+        initial_state=recent_data[-1, 0],
+        initial_bias=0.0,
+        initial_state_spread=0.003,
+        initial_bias_spread=0.008,
+    )
+
+    print(f"EnKF初期化: ensemble_size={enkf.N}, Q_x={enkf.Q_x}, Q_b={enkf.Q_b}, R={enkf.R}\n")
+
+    results = []
+    test_data = df_test['Close'].values
+    test_dates = df_test.index
+
+    print(f"検証期間: {len(df_test)}日\n")
+    print(f"{'日付':<10} {'実績値':>9} {'LSTM予測値':>9} {'EnKF補正予測':>11} {'EnKF更新値':>11} {'LSTM誤差':>8} {'EnKF予測誤差':>10} {'EnKF更新誤差':>10}")
+    print("-" * 108)
+
+    for day_idx in range(len(test_data)):
+        current_date = test_dates[day_idx].strftime("%Y-%m-%d")
+        actual_normalized = test_data[day_idx]
+
+        lstm_pred = predict_next(model, recent_data)
+        enkf_prior, _ = enkf.predict(lstm_pred)
+        enkf_analysis, _ = enkf.update(actual_normalized)
+
+        actual_value = scaler.inverse_transform([[actual_normalized]])[0, 0]
+        lstm_pred_value = scaler.inverse_transform([[lstm_pred]])[0, 0]
+        enkf_prior_value = scaler.inverse_transform([[enkf_prior]])[0, 0]
+        enkf_analysis_value = scaler.inverse_transform([[enkf_analysis]])[0, 0]
+
+        lstm_error = abs(actual_value - lstm_pred_value)
+        enkf_prior_error = abs(actual_value - enkf_prior_value)
+        enkf_analysis_error = abs(actual_value - enkf_analysis_value)
+
+        results.append({
+            'date': current_date,
+            'actual_normalized': actual_normalized,
+            'lstm_pred_normalized': lstm_pred,
+            'kf_pred_normalized': enkf_prior,
+            'kf_corrected_normalized': enkf_analysis,
+            'actual_value': actual_value,
+            'lstm_pred_value': lstm_pred_value,
+            'kf_pred_value': enkf_prior_value,
+            'kf_corrected_value': enkf_analysis_value,
+            'lstm_error': lstm_error,
+            'kf_pred_error': enkf_prior_error,
+            'kf_corrected_error': enkf_analysis_error,
+            'kf_error': enkf_analysis_error,
+            'kf_gain': enkf.history_gain[-1] if enkf.history_gain else 0,
+            'kf_error_cov': enkf.history_error_cov[-1] if enkf.history_error_cov else 0,
+        })
+
+        recent_data = np.vstack([recent_data[1:], [[actual_normalized]]])
+
+        print(f"{current_date:<12} {actual_value:>12.2f} {lstm_pred_value:>12.2f} {enkf_prior_value:>12.2f} {enkf_analysis_value:>12.2f} {lstm_error:>10.2f} {enkf_prior_error:>12.2f} {enkf_analysis_error:>12.2f}")
+
+    results_df = pd.DataFrame(results)
+    results_df.to_csv('results/data_assimilation_results.csv', index=False)
+    print(f"\n✓ 結果を保存: results/data_assimilation_results.csv")
+
+    print("\n========== 評価指標 ==========")
+    lstm_mae = results_df['lstm_error'].mean()
+    kf_pred_mae = results_df['kf_pred_error'].mean()
+    kf_corrected_mae = results_df['kf_corrected_error'].mean()
+
+    print(f"MAE（平均絶対誤差）:")
+    print(f"  LSTM: {lstm_mae:.2f} 円")
+    print(f"  EnKF補正予測: {kf_pred_mae:.2f} 円")
+    print(f"  改善率: {(1 - kf_pred_mae/lstm_mae)*100:.2f}%")
+    print(f"  EnKF更新値: {kf_corrected_mae:.2f} 円")
+    print(f"  改善率: {(1 - kf_corrected_mae/lstm_mae)*100:.2f}%")
+
+    lstm_rmse = np.sqrt((results_df['lstm_error']**2).mean())
+    kf_pred_rmse = np.sqrt((results_df['kf_pred_error']**2).mean())
+    kf_corrected_rmse = np.sqrt((results_df['kf_corrected_error']**2).mean())
+
+    print(f"\nRMSE（二乗平均平方根誤差）:")
+    print(f"  LSTM: {lstm_rmse:.2f} 円")
+    print(f"  EnKF補正予測: {kf_pred_rmse:.2f} 円")
+    print(f"  改善率: {(1 - kf_pred_rmse/lstm_rmse)*100:.2f}%")
+    print(f"  EnKF更新値: {kf_corrected_rmse:.2f} 円")
+    print(f"  改善率: {(1 - kf_corrected_rmse/lstm_rmse)*100:.2f}%")
+
+    avg_gain = np.mean(results_df['kf_gain'])
+    print(f"\nカルマンゲイン統計:")
+    print(f"  平均: {avg_gain:.6f}")
+    print(f"  最小: {results_df['kf_gain'].min():.6f}")
+    print(f"  最大: {results_df['kf_gain'].max():.6f}")
+    print(f"\n最終推定誤差共分散: {results_df['kf_error_cov'].iloc[-1]:.8f}")
+
+    return results_df
+
 if __name__ == "__main__":
-    results_df = data_assimilation_experiment()
+    results_df = data_assimilation_augmented_enkf_experiment()
 
     import visualize_results
     visualize_results.visualize_results()
