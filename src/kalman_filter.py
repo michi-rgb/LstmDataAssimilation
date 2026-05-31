@@ -277,3 +277,92 @@ class AdaptiveKalmanFilter(KalmanFilter):
         self.history_error_cov.append(P_k)
         
         return x_k
+
+
+class AugmentedStateEnKF:
+    """
+    拡張状態EnKF（1次元予測 + 系統誤差バイアス）
+    観測からモデル誤差パラメータを学習し、次の観測前に補正を行う。
+    """
+
+    def __init__(
+        self,
+        ensemble_size,
+        process_variance_x,
+        process_variance_bias,
+        measurement_variance,
+        initial_state,
+        initial_bias,
+        initial_state_spread=0.005,
+        initial_bias_spread=0.01,
+    ):
+        self.N = ensemble_size
+        self.Q_x = process_variance_x
+        self.Q_b = process_variance_bias
+        self.R = measurement_variance
+
+        self.ensemble = np.zeros((self.N, 2))
+        self.ensemble[:, 0] = initial_state + np.random.normal(0, initial_state_spread, self.N)
+        self.ensemble[:, 1] = initial_bias + np.random.normal(0, initial_bias_spread, self.N)
+
+        self.history_prior = []
+        self.history_analysis = []
+        self.history_bias = []
+        self.history_gain = []
+        self.history_error_cov = []
+
+    def predict(self, predicted_value):
+        """
+        観測前の予測ステップ。LSTM予測値に学習中のバイアスを加えて補正する。
+        """
+        x = self.ensemble[:, 0]
+        b = self.ensemble[:, 1]
+
+        x_forecast = predicted_value + b + np.random.normal(0, np.sqrt(self.Q_x), self.N)
+        b_forecast = b + np.random.normal(0, np.sqrt(self.Q_b), self.N)
+
+        self.ensemble[:, 0] = x_forecast
+        self.ensemble[:, 1] = b_forecast
+
+        prior_mean = self.ensemble.mean(axis=0)
+        self.history_prior.append(prior_mean.copy())
+        return prior_mean[0], prior_mean[1]
+
+    def update(self, measured_value):
+        """
+        観測を使って拡張状態を更新する。観測誤差を通じて系統誤差バイアスを学習する。
+        """
+        y = self.ensemble[:, 0].copy()
+        obs_perturbed = measured_value + np.random.normal(0, np.sqrt(self.R), self.N)
+
+        ensemble_mean = self.ensemble.mean(axis=0)
+        y_mean = y.mean()
+        X = self.ensemble - ensemble_mean
+        Y = y - y_mean
+
+        P_xy = (X.T @ Y) / (self.N - 1)
+        P_yy = (Y @ Y) / (self.N - 1) + self.R
+
+        K = P_xy / P_yy
+
+        for i in range(self.N):
+            self.ensemble[i, :] += K * (obs_perturbed[i] - y[i])
+
+        analysis_mean = self.ensemble.mean(axis=0)
+        self.history_analysis.append(analysis_mean.copy())
+        self.history_bias.append(analysis_mean[1])
+        self.history_gain.append(float(K[0]))
+
+        cov = np.cov(self.ensemble.T)
+        self.history_error_cov.append(float(cov[0, 0]))
+
+        return analysis_mean[0], analysis_mean[1]
+
+    def get_history(self):
+        return {
+            'prior': np.array(self.history_prior),
+            'analysis': np.array(self.history_analysis),
+            'bias': np.array(self.history_bias),
+            'gain': np.array(self.history_gain),
+            'error_cov': np.array(self.history_error_cov)
+        }

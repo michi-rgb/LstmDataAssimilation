@@ -9,9 +9,15 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import pickle
+import matplotlib.pyplot as plt
+from matplotlib import rcParams
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用デバイス: {device}")
+
+# 日本語フォントの設定
+rcParams['font.sans-serif'] = ['Yu Gothic', 'Hiragino Sans', 'DejaVu Sans']
+rcParams['axes.unicode_minus'] = False
 
 class LSTMModel(nn.Module):
     """
@@ -27,6 +33,7 @@ class LSTMModel(nn.Module):
                            num_layers=num_layers,
                            batch_first=True,
                            dropout=0.2)
+        self.dropout = nn.Dropout(p=0.3)
         self.fc = nn.Linear(hidden_size, output_size)
         
     def forward(self, x):
@@ -39,6 +46,7 @@ class LSTMModel(nn.Module):
         lstm_out, (h_n, c_n) = self.lstm(x)
         # 最後のタイムステップの出力を使用
         last_out = lstm_out[:, -1, :]
+        last_out = self.dropout(last_out)
         y = self.fc(last_out)
         return y
 
@@ -88,10 +96,10 @@ def train_lstm():
     
     # 損失関数と最適化器
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
     
     # 学習ループ
-    num_epochs = 50
+    num_epochs = 100
     batch_size = 32
     
     loss_history = []
@@ -131,10 +139,25 @@ def train_lstm():
     print(f"✓ モデル保存: models/lstm_model.pth")
     
     # 学習曲線をcsvに保存
-    pd.DataFrame({'epoch': range(1, num_epochs+1), 'loss': loss_history}).to_csv(
-        'results/training_loss.csv', index=False
-    )
+    loss_df = pd.DataFrame({'epoch': range(1, num_epochs+1), 'loss': loss_history})
+    loss_df.to_csv('results/training_loss.csv', index=False)
     print(f"✓ 学習曲線保存: results/training_loss.csv")
+    
+    # 学習曲線グラフを保存
+    fig, ax = plt.subplots(figsize=(14, 5))
+    ax.plot(loss_df['epoch'], loss_df['loss'], 'b-', linewidth=2, label='損失')
+    ax.set_xlabel('エポック', fontsize=12)
+    ax.set_ylabel('損失（MSE、対数スケール）', fontsize=12)
+    ax.set_title('LSTM学習曲線', fontsize=14, fontweight='bold')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=10)
+    plt.tight_layout()
+    
+    output_file = 'results/training_loss.png'
+    plt.savefig(output_file, dpi=150, bbox_inches='tight')
+    print(f"✓ グラフ保存: {output_file}")
+    plt.close()
     
     return model, loss_history
 
